@@ -1,5 +1,5 @@
 import tensorflow as tf
-from transformers import BertTokenizer
+from transformers import BertTokenizer, TFBertModel
 from tensorflow.keras.layers import Input, Dense, Dropout
 from tensorflow.keras.models import Model
 import pandas as pd
@@ -16,6 +16,7 @@ def train_sentiment_model(input_csv, model_save_path):
     # Load the dataset
     data = pd.read_csv(input_csv)
 
+    # Shuffle the dataset
     data = shuffle(data, random_state=42)
 
     # Prepare the text and labels
@@ -53,42 +54,46 @@ def train_sentiment_model(input_csv, model_save_path):
     val_attention_masks = attention_masks[train_size:]
     val_labels = labels[train_size:]
 
+    # Load the pre-trained BERT model
+    bert_model = TFBertModel.from_pretrained(model_name)
+
     # Build the model
     input_ids_layer = Input(shape=(100,), dtype=tf.int32, name="input_ids")
     attention_masks_layer = Input(shape=(100,), dtype=tf.int32, name="attention_mask")
 
-    # Embedding layer (trainable)
-    embedding_layer = tf.keras.layers.Embedding(input_dim=30522, output_dim=128, input_length=100)(input_ids_layer)
-
-    # Global Average Pooling
-    pooled_output = tf.keras.layers.GlobalAveragePooling1D()(embedding_layer)
+    # Use BERT's output
+    bert_output = bert_model(input_ids_layer, attention_mask=attention_masks_layer)[1]  # Pooled output ([CLS] token)
 
     # Fully connected layers
-    dense = Dense(64, activation='relu')(pooled_output)
+    dense = Dense(128, activation='relu')(bert_output)
+    dropout = Dropout(0.5)(dense)
+    dense = Dense(64, activation='relu')(dropout)
     dropout = Dropout(0.3)(dense)
-    output = Dense(3, activation='softmax')(dropout)
+    dense = Dense(16, activation='relu')(dropout)
+    output = Dense(3, activation='softmax')(dense)
 
     model = Model(inputs=[input_ids_layer, attention_masks_layer], outputs=output)
+
+    print(model.summary())  # Print model summary
 
     # Compile the model
     model.compile(loss='sparse_categorical_crossentropy',
                   optimizer=tf.keras.optimizers.Adam(learning_rate=2e-5),
                   metrics=['accuracy'])
 
-    # Train the model using GPU
-    with tf.device('/GPU:0'):  # 明示的にGPUを指定
-        model.fit(
-            [train_input_ids, train_attention_masks],
-            train_labels,
-            validation_data=([val_input_ids, val_attention_masks], val_labels),
-            epochs=20,
-            batch_size=16
-        )
+    # Train the model
+    model.fit(
+        [train_input_ids, train_attention_masks],
+        train_labels,
+        validation_data=({"input_ids": val_input_ids, "attention_mask": val_attention_masks}, val_labels),
+        epochs=20,
+        batch_size=32
+    )
 
-    # Save the model in TensorFlow format
+    # Save the model
     model.save(model_save_path)
 
 # Example usage
 input_csv = 'japanese_sentence_with_sentiment.csv'
-model_save_path = 'sentiment_model'
+model_save_path = 'sentiment_model.h5'
 train_sentiment_model(input_csv, model_save_path)
